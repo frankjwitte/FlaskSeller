@@ -31,6 +31,7 @@ Omit the value to show the current setting. Prices use whole **copper**.
 
 | Command | Example |
 | --- | --- |
+| `/flask show` | Reopen the FlaskSeller panel while the AH is open |
 | `/flask status` | Show last complete result and scan message |
 | `/flask item [ID]` | `/flask item 22851` |
 | `/flask interval [seconds]` | `/flask interval 10` (5–3600) |

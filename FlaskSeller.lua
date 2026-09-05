@@ -198,9 +198,20 @@ function F:PlaySaleSound(itemName)
     end
 end
 
+function F:ShowPanel()
+    if not self.open then
+        self:Notice("Open the Auction House to show FlaskSeller.")
+        return false
+    end
+    self:CreateUI()
+    self.panel:Show()
+    self:Refresh()
+    return true
+end
 function F:Command(message)
     local command, arg = message:match("^%s*(%S*)%s*(.-)%s*$")
     command = command:lower()
+    if command == "show" then self:ShowPanel(); return end
     if command == "" or command == "status" then
         reply(string.format("Item %d | %s%s | Yours %s | Market %s | Suggested %s",
             self.db.itemID, self.paused and "PAUSED" or self.state.status,
@@ -228,7 +239,7 @@ function F:Command(message)
     end
     local rule = limits[command]
     if not rule then
-        reply("/flask status | item [ID] | interval [seconds] | undercut [copper] | fallback [copper] | minimum [copper] | sound [on/off] | quiet [on/off]")
+        reply("/flask show | status | item [ID] | interval [seconds] | undercut [copper] | fallback [copper] | minimum [copper] | sound [on/off] | quiet [on/off]")
         return
     end
     if arg == "" then reply(command .. " = " .. self.db[rule[1]]); return end

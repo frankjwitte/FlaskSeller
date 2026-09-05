@@ -1,0 +1,10 @@
+## Interface: 20506, 20505
+## Title: FlaskSeller
+## Notes: A small, single-item auction price watcher for TBC Anniversary.
+## Author: FlaskSeller
+## Version: 1.0.0
+## SavedVariablesPerCharacter: FlaskSellerDB
+
+FlaskSeller.lua
+AuctionScanner.lua
+UI.lua

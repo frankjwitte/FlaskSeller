@@ -13,11 +13,15 @@ function F:ReceiveItem()
     end
     local location = C_Cursor.GetCursorItem()
     if not location then self:Notice("Drag an item from your bags onto Drop item here."); return end
-    if not self:SetItem(C_Item.GetItemID(location)) then
+    local itemID = C_Item.GetItemID(location)
+    if not self:AddWatchItem(itemID) then
+        self:Notice("Watchlist is full (four items)."); return
+    end
+    if not self:SetItem(itemID) then
         self:Notice("Could not identify that item. Try dragging it from your bags again."); return
     end
     ClearCursor()
-    self:Notice("Watching " .. (self.itemName or ("item " .. self.db.itemID))
+    self:Notice("Watching " .. (self.itemName or ("item " .. self:SelectedItemID()))
         .. (self.paused and ". Use Refresh now or turn Auto on." or ". Scanning automatically."))
 end
 
@@ -37,7 +41,7 @@ function F:Prepare()
     end
     AuctionFrameTab_OnClick(AuctionFrameTab3)
     local itemID = select(10, GetAuctionSellItemInfo())
-    if itemID ~= self.db.itemID then
+    if itemID ~= self:SelectedItemID() then
         self:Notice("Drag the configured flask into Blizzard's sell slot, then click Prepare 1 again."); return
     end
     AuctionsStackSizeEntry:SetNumber(1)
@@ -56,7 +60,7 @@ function F:FindItemInBags()
     for bag = 0, 4 do
         local slots = C_Container.GetContainerNumSlots(bag) or 0
         for slot = 1, slots do
-            if C_Container.GetContainerItemID(bag, slot) == self.db.itemID then
+            if C_Container.GetContainerItemID(bag, slot) == self:SelectedItemID() then
                 return bag, slot
             end
         end
@@ -86,13 +90,23 @@ function F:PostOne()
     -- timed posting and always posts exactly one item in one auction.
     local problem = self:PostOneProblem()
     if problem then self:Notice(problem); return end
-    local bag, slot = self:FindItemInBags()
     local price = self.state.suggested
+    if self.db.minimumPrice > 0 and price < self.db.minimumPrice then
+        local confirmation = self.lowPriceConfirmation
+        if not confirmation or confirmation.price ~= price or GetTime() - confirmation.at > 10 then
+            self.lowPriceConfirmation = { price = price, at = GetTime() }
+            self:Notice("Price guard: " .. self:Money(price) .. " is below your minimum of "
+                .. self:Money(self.db.minimumPrice) .. ". Click Post 1 again within 10 seconds to confirm.")
+            return
+        end
+    end
+    self.lowPriceConfirmation = nil
+    local bag, slot = self:FindItemInBags()
     local ok, message = pcall(function()
         AuctionFrameTab_OnClick(AuctionFrameTab3)
         C_Container.PickupContainerItem(bag, slot)
         ClickAuctionSellItemButton(AuctionsItemButton, "LeftButton", false)
-        if select(10, GetAuctionSellItemInfo()) ~= self.db.itemID then
+        if select(10, GetAuctionSellItemInfo()) ~= self:SelectedItemID() then
             error("The native sell slot did not accept the selected item.")
         end
         AuctionsStackSizeEntry:SetNumber(1)
@@ -100,7 +114,7 @@ function F:PostOne()
         MoneyInputFrame_SetCopper(StartPrice, price)
         MoneyInputFrame_SetCopper(BuyoutPrice, price)
         AuctionsFrameAuctions_ValidateAuction()
-        self.prepared = { itemID = self.db.itemID, price = price,
+        self.prepared = { itemID = self:SelectedItemID(), price = price,
             duration = AuctionFrameAuctions and AuctionFrameAuctions.duration }
         local postProblem = self:PostProblem()
         if postProblem then error(postProblem) end
@@ -131,7 +145,7 @@ function F:PostProblem()
     if not self.state.checked or GetTime() - self.state.checked > math.max(30, self.db.interval * 2) then
         return "Prices are stale. Refresh and Prepare 1 again."
     end
-    if prepared.itemID ~= self.db.itemID or select(10, GetAuctionSellItemInfo()) ~= prepared.itemID then
+    if prepared.itemID ~= self:SelectedItemID() or select(10, GetAuctionSellItemInfo()) ~= prepared.itemID then
         return "The sell item changed. Place the configured item in the sell slot and Prepare 1 again."
     end
     if prepared.price ~= self.state.suggested or MoneyInputFrame_GetCopper(StartPrice) ~= prepared.price
@@ -172,7 +186,7 @@ function F:CreateUI()
     if self.panel then return end
     local panel = CreateFrame("Frame", "FlaskSellerPanel", UIParent, "BackdropTemplate")
     self.panel = panel
-    panel:SetSize(310, 424)
+    panel:SetSize(310, 660)
     panel:SetPoint("TOPLEFT", AuctionFrame or UIParent, "TOPRIGHT", 8, -20)
     panel:SetClampedToScreen(true)
     panel:SetFrameStrata("DIALOG")
@@ -241,28 +255,61 @@ function F:CreateUI()
     dropHint:SetTextColor(0.62, 0.65, 0.70)
     panel.itemSlot:SetScript("OnReceiveDrag", function() F:ReceiveItem() end)
     panel.itemSlot:SetScript("OnClick", function() F:ReceiveItem() end)
-    local yours = label(panel, 16, -122, 134)
+    dropHint:SetText("Drop an item here to add (up to 4)")
+    panel.rows = {}
+    for index = 1, 4 do
+        local row = CreateFrame("Button", nil, panel, "BackdropTemplate")
+        row:SetPoint("TOPLEFT", 16, -112 - (index - 1) * 38)
+        row:SetSize(278, 36)
+        row:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
+        row.name = label(row, 8, -4, 190, "GameFontHighlightSmall")
+        row.status = label(row, 200, -4, 44, "GameFontHighlightSmall")
+        row.details = label(row, 8, -19, 248, "GameFontHighlightSmall")
+        row.details:SetTextColor(0.62, 0.65, 0.70)
+        row.remove = CreateFrame("Button", nil, row, "BackdropTemplate")
+        row.remove:SetPoint("TOPRIGHT", -4, -8)
+        row.remove:SetSize(18, 18)
+        row.remove:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8" })
+        row.remove:SetBackdropColor(0.25, 0.08, 0.08, 1)
+        local removeText = row.remove:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        removeText:SetPoint("CENTER")
+        row.remove:SetFontString(removeText)
+        row.remove:SetText("x")
+        row:SetScript("OnClick", function(self) if self.itemID then F:SelectWatchItem(self.itemID) end end)
+        row.remove:SetScript("OnClick", function(self) if self.itemID then F:RemoveWatchItem(self.itemID) end end)
+        panel.rows[index] = row
+    end
+    local yours = label(panel, 16, -280, 134)
     yours:SetText("YOUR LOWEST")
     yours:SetTextColor(0.56, 0.60, 0.66)
-    local market = label(panel, 164, -122, 130)
+    local market = label(panel, 164, -280, 130)
     market:SetText("MARKET LOWEST")
     market:SetTextColor(0.56, 0.60, 0.66)
-    panel.ownPrice = label(panel, 16, -141, 134, "GameFontHighlight")
-    panel.marketPrice = label(panel, 164, -141, 130, "GameFontHighlight")
-    fill(panel, 16, -168, 278, 1, 0.16, 0.18, 0.21)
-    panel.indicator = fill(panel, 17, -185, 6, 6, 0.6, 0.6, 0.6)
-    panel.status = label(panel, 32, -181, 262, "GameFontHighlightSmall")
-    fill(panel, 16, -206, 278, 54, 0.10, 0.093, 0.075)
-    local suggestionLabel = label(panel, 28, -215, 250)
+    panel.ownPrice = label(panel, 16, -299, 134, "GameFontHighlight")
+    panel.marketPrice = label(panel, 164, -299, 130, "GameFontHighlight")
+    fill(panel, 16, -326, 278, 1, 0.16, 0.18, 0.21)
+    panel.indicator = fill(panel, 17, -343, 6, 6, 0.6, 0.6, 0.6)
+    panel.status = label(panel, 32, -339, 262, "GameFontHighlightSmall")
+    fill(panel, 16, -364, 278, 54, 0.10, 0.093, 0.075)
+    local suggestionLabel = label(panel, 28, -373, 250)
     suggestionLabel:SetText("SUGGESTED BUYOUT / ITEM")
     suggestionLabel:SetTextColor(0.68, 0.62, 0.48)
-    panel.suggested = label(panel, 28, -234, 250, "GameFontNormalLarge")
+    panel.suggested = label(panel, 28, -392, 250, "GameFontNormalLarge")
     panel.suggested:SetTextColor(1, 0.82, 0.44)
-    panel.button = button(16, -269, 278, 32, "Post 1", function() F:PostOne() end, true)
-    panel.refreshButton = button(16, -310, 135, 28, "Refresh now", function() F:ManualRefresh() end)
-    panel.scanButton = button(159, -310, 135, 28, "Auto: On", function() F:ToggleScanning() end)
-    panel.note = label(panel, 16, -350, 278)
-    panel.note:SetHeight(62)
+    panel.button = button(16, -427, 278, 32, "Post 1", function() F:PostOne() end, true)
+    panel.meta = label(panel, 16, -467, 278)
+    panel.meta:SetTextColor(0.56, 0.60, 0.66)
+    panel.refreshButton = button(16, -488, 135, 28, "Refresh now", function() F:ManualRefresh() end)
+    panel.scanButton = button(159, -488, 135, 28, "Auto: On", function() F:ToggleScanning() end)
+    panel.recentButton = button(16, -525, 135, 24, "Next recent", function() F:UseNextRecentItem() end)
+    panel.quietButton = button(159, -525, 135, 24, "Quiet: On", function()
+        F.db.quietMode = not F.db.quietMode
+        F:Refresh()
+    end)
+    panel.history = label(panel, 16, -560, 278)
+    panel.history:SetTextColor(0.56, 0.60, 0.66)
+    panel.note = label(panel, 16, -583, 278)
+    panel.note:SetHeight(50)
     panel.note:SetTextColor(0.64, 0.68, 0.74)
     self:Refresh()
 end
@@ -270,9 +317,39 @@ end
 function F:UpdateUI()
     local p, s = self.panel, self.state
     if not p then return end
-    p.item:SetText(self.itemName or ("Item " .. self.db.itemID))
-    local icon = C_Item and C_Item.GetItemIconByID and C_Item.GetItemIconByID(self.db.itemID)
+    p.item:SetText(self.itemName or ("Item " .. self:SelectedItemID()))
+    local icon = C_Item and C_Item.GetItemIconByID and C_Item.GetItemIconByID(self:SelectedItemID())
     p.icon:SetTexture(icon or "Interface\\Icons\\INV_Misc_QuestionMark")
+    local getInfo = C_Item and C_Item.GetItemInfo or GetItemInfo
+    for index, row in ipairs(p.rows or {}) do
+        local itemID = (self.db.watchItems or {})[index]
+        if itemID then
+            local itemState = self:StateFor(itemID)
+            local name = getInfo and getInfo(itemID) or ("Item " .. itemID)
+            local selected = itemID == self:SelectedItemID()
+            local state = itemState.checked and itemState.status or "WAITING"
+            row.itemID, row.remove.itemID = itemID, itemID
+            row.name:SetText((selected and "> " or "  ") .. name)
+            local shortStatus = { COMPETITIVE = "OK", UNDERCUT = "LOW", NO_AUCTION = "NONE", POSSIBLY_SOLD = "SOLD", WAITING = "..." }
+            row.status:SetText(shortStatus[state] or state)
+            local statusColor = colors[itemState.status] or colors.NO_AUCTION
+            row.status:SetTextColor(unpack(statusColor))
+            row.details:SetText("Y " .. self:Money(itemState.own) .. "   M " .. self:Money(itemState.market)
+                .. "   P " .. self:Money(itemState.suggested))
+            row:SetBackdropColor(selected and 0.14 or 0.055, selected and 0.11 or 0.064, selected and 0.065 or 0.078, 1)
+            row:SetBackdropBorderColor(selected and 0.72 or 0.18, selected and 0.54 or 0.20, selected and 0.25 or 0.24, 1)
+            row.remove:SetEnabled(#(self.db.watchItems or {}) > 1)
+        else
+            row.itemID, row.remove.itemID = nil, nil
+            row.name:SetText("+ Empty watch slot")
+            row.status:SetText("")
+            row.details:SetText("Drop a flask above to add it")
+            row:SetBackdropColor(0.045, 0.052, 0.064, 1)
+            row:SetBackdropBorderColor(0.12, 0.14, 0.17, 1)
+            row.remove:SetEnabled(false)
+        end
+        row:Show()
+    end
     p.ownPrice:SetText(self:Money(s.own))
     p.marketPrice:SetText(self:Money(s.market))
     p.status:SetText("Status: " .. (s.checked and s.status or (self.paused and not self.manualRequested and "PAUSED" or "WAITING")))
@@ -280,6 +357,10 @@ function F:UpdateUI()
     p.status:SetTextColor(unpack(color))
     p.indicator:SetColorTexture(color[1], color[2], color[3], 1)
     p.suggested:SetText(self:Money(s.suggested))
+    local checked = s.checked and math.max(0, math.floor(GetTime() - s.checked)) or nil
+    p.meta:SetText("Watching " .. #(self.db.watchItems or {}) .. "/4 | In bags: " .. self:CountItemsInBags() .. "   |   Last check: "
+        .. (checked and (checked .. "s ago") or "not yet"))
+    p.history:SetText("Recent: " .. ((s.history and #s.history > 0) and table.concat(s.history, " -> ") or "-"))
     p.note:SetText(s.note or "")
     p.button:SetEnabled(self:PostOneProblem() == nil)
     if s.status == "COMPETITIVE" then p.button:SetText("All good — no action needed")
@@ -297,4 +378,6 @@ function F:UpdateUI()
     p.refreshButton:SetEnabled(self.scan == nil and not self.manualRequested)
     p.refreshButton:SetText((self.scan or self.manualRequested) and "Checking..." or "Refresh now")
     p.modeButton:SetText(self.db.lowestPageOnly and "Lowest page" or "All pages")
+    p.quietButton:SetText(self.db.quietMode and "Quiet: On" or "Quiet: Off")
+    p.recentButton:SetEnabled(self.db.recentItems and #self.db.recentItems > 1)
 end

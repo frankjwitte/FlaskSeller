@@ -11,7 +11,7 @@ function F:ToggleScanMode()
         or "All-pages mode: scan every matching market page.")
 end
 
-function F:ReadOwnAuctions()
+function F:ReadOwnAuctions(watchedID)
     -- Blizzard requests this list when AH opens and subsequently updates it.
     -- Do not turn an unloaded/partial owner buffer into a missing-auction alert.
     if not self.ownersReady then return end
@@ -22,7 +22,7 @@ function F:ReadOwnAuctions()
         local name, _, quantity, _, _, _, _, _, _, buyout, _, _, _, _, _, saleStatus, itemID =
             GetAuctionItemInfo("owner", index)
         if not name or not itemID or not quantity or quantity < 1 or not buyout or saleStatus == nil then return end
-        if itemID == self.db.itemID and saleStatus == 0 then
+        if itemID == watchedID and saleStatus == 0 then
             count = count + 1
             if buyout > 0 then lowest = lowest and math.min(lowest, buyout / quantity) or buyout / quantity end
         end
@@ -49,7 +49,7 @@ function F:ToggleScanning()
         self:Notice("Automatic checks are off. Use Refresh now for a single check.")
     else
         -- Do not infer sales across a gap in monitoring.
-        self.previousCount, self.missingScans, self.possiblySold = nil, nil, nil
+        for _, state in pairs(self.db.itemStates or {}) do state.saleBaseline, state.missingScans, state.possiblySold = nil, nil, nil end
         self.nextScan = GetTime()
         self:Notice("Checks resumed. Waiting for a fresh scan.")
     end
@@ -85,8 +85,8 @@ function F:InstallHooks()
         hooksecurefunc("PostAuction", function(_, buyout, _, quantity)
             local itemID = select(10, GetAuctionSellItemInfo())
             F.pendingPost = nil
-            if F.open and itemID == F.db.itemID and buyout and buyout > 0 and quantity and quantity > 0 then
-                F.pendingPost = math.floor(buyout / quantity)
+            if F.open and itemID == F:SelectedItemID() and buyout and buyout > 0 and quantity and quantity > 0 then
+                F.pendingPost = { itemID = itemID, price = math.floor(buyout / quantity) }
             end
         end)
     end
@@ -125,7 +125,7 @@ function F:ReadPage()
         -- Missing owners/data must never be interpreted as a competitor or disappearance.
         if not name or not complete or not itemID or not quantity or quantity < 1
             or not buyout or (not owner or owner == "") and (not fullName or fullName == "") then return end
-        if itemID == self.db.itemID and (not saleStatus or saleStatus == 0) then
+        if itemID == scan.itemID and (not saleStatus or saleStatus == 0) then
             local mine = isMine(owner, fullName)
             if mine then count = count + 1 end
             if buyout > 0 then
@@ -139,7 +139,7 @@ function F:ReadPage()
     local morePages = (scan.page + 1) * PAGE_SIZE < total
     local usedOwners = false
     if morePages and scan.lowestFirst and market then
-        local ready, ownerLowest, ownerCount = self:ReadOwnAuctions()
+        local ready, ownerLowest, ownerCount = self:ReadOwnAuctions(scan.itemID)
         -- Cross-check any own listings already seen against the owner cache.
         if ready and ownerCount >= count and (not own or (ownerLowest and ownerLowest <= own)) then
             own, count, morePages, usedOwners = ownerLowest, ownerCount, false, true
@@ -152,7 +152,8 @@ function F:ReadPage()
         self.scan = nil
         self.manualRequested = nil
         self.nextScan = GetTime() + self.db.interval
-        self:CommitScan(own, market, count)
+        self:CommitScan(scan.itemID, own, market, count)
+        self:AdvanceWatchItem()
         if usedOwners then
             self:Notice(self.state.note .. " Cheapest market prices checked; your listings verified in My Auctions.")
         end
@@ -176,16 +177,18 @@ function F:Tick()
         end
     elseif now < (self.nextScan or 0) then return
     else
+        local watchItems = self.db.watchItems or {}
+        local itemID = watchItems[self.scanCursor or 1] or self:SelectedItemID()
         local getInfo = C_Item and C_Item.GetItemInfo or GetItemInfo
-        local name = getInfo and getInfo(self.db.itemID)
+        local name = getInfo and getInfo(itemID)
         if not name then
-            if C_Item and C_Item.RequestLoadItemDataByID then C_Item.RequestLoadItemDataByID(self.db.itemID) end
+            if C_Item and C_Item.RequestLoadItemDataByID then C_Item.RequestLoadItemDataByID(itemID) end
             self.nextScan = now + self.db.interval
             self.manualRequested = nil
             self:Notice("Loading item name; refresh again shortly. Check /flask item if this persists."); return
         end
-        self.itemName = name
-        self.scan = { name = name, page = 0, count = 0, started = now,
+        if itemID == self:SelectedItemID() then self.itemName = name end
+        self.scan = { itemID = itemID, name = name, page = 0, count = 0, started = now,
             lowestFirst = self.db.lowestPageOnly and type(SortAuctionClearSort) == "function"
                 and type(SortAuctionSetSort) == "function" }
     end
